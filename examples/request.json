@@ -1,0 +1,22 @@
+{
+  "plasmid_length": 1000,
+  "min_visible_fragment": 50,
+  "band_resolution_tolerance": 20,
+  "enzymes": [
+    {
+      "name": "EcoRI",
+      "reference_sites": [100, 600],
+      "variant_sites": [100, 600, 850]
+    },
+    {
+      "name": "BamHI",
+      "reference_sites": [300],
+      "variant_sites": [300]
+    },
+    {
+      "name": "HindIII",
+      "reference_sites": [50],
+      "variant_sites": [50]
+    }
+  ]
+}

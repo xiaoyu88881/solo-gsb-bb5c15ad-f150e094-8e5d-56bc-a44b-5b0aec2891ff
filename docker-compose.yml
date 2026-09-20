@@ -1,0 +1,27 @@
+services:
+  dna-digest:
+    build: .
+    image: circular-dna-digest:latest
+    container_name: circular-dna-digest
+    ports:
+      # 宿主机端口:容器端口，可通过 HOST_PORT 覆盖
+      - "${HOST_PORT:-8000}:${APP_PORT:-8000}"
+    environment:
+      # 容器内监听地址 / 端口（核心功能无需其他配置）
+      APP_HOST: "0.0.0.0"
+      APP_PORT: "8000"
+      # 单次请求允许的最大酶数量
+      MAX_ENZYMES: "64"
+      # identify / mixture 接口每个条带列表允许的最大条带数
+      MAX_BANDS: "512"
+      # panel 接口允许的最大变异型数量（最小面板为精确集合覆盖）
+      MAX_VARIANTS: "16"
+      # mixture 接口允许的最大候选成分数（枚举至多该规模的全部子集）
+      MAX_MIXTURE_CANDIDATES: "12"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import os,sys,urllib.request; port=os.getenv('APP_PORT','8000'); sys.exit(0 if urllib.request.urlopen(f'http://127.0.0.1:{port}/health', timeout=3).status==200 else 1)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s

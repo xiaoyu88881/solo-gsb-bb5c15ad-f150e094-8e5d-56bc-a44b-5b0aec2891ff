@@ -1,0 +1,15 @@
+{
+  "components": [
+    {
+      "name": "strain-A",
+      "predicted_bands": [230, 320, 450]
+    },
+    {
+      "name": "strain-B",
+      "predicted_bands": [318, 460, 700]
+    }
+  ],
+  "observed_bands": [231, 319, 455, 702],
+  "band_match_tolerance": 10,
+  "max_components": 2
+}

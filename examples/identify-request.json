@@ -1,0 +1,6 @@
+{
+  "reference_bands": [230, 320, 450],
+  "variant_bands": [200, 300, 500],
+  "observed_bands": [231, 318, 455],
+  "band_match_tolerance": 10
+}

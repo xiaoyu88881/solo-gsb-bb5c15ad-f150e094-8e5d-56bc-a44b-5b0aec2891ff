@@ -1,11 +1,12 @@
 # 环状 DNA 双酶切鉴别服务
 
-基于 FastAPI 的圆形（环状）DNA 双酶切鉴别服务，提供四个互补接口：
+基于 FastAPI 的圆形（环状）DNA 双酶切鉴别服务，提供五个互补接口：
 
 - **方案推荐**：客户端提交质粒长度、参考型与变异型的候选酶切位点、最小可见片段长度和条带分辨容差，服务枚举所有不同酶对，按圆环相邻切点计算两种样本的片段长度，将容差内的片段聚为同一条电泳条带，并推荐能够区分两种样本的酶对。
 - **样本鉴别**：客户端提交同一质粒参考型、变异型的预测条带长度和一次凝胶观测长度列表，服务在给定容差内做确定性的一对一最小代价匹配，分别计算两种样本的缺失条带、额外条带与总误差，判定观测样本为参考型、变异型或无法区分。
 - **最小酶对面板**：客户端提交质粒长度、可见阈值、分辨容差及酶列表（每种酶给出参考型切点和按变异名映射的变异型切点），服务复用同一套圆环酶切与聚带规则评估每个酶对对每个变异型的可区分条带，并**精确**求出覆盖全部变异型的最小酶对面板（非贪心近似）。
 - **混合样本解析**：客户端提交若干**命名候选成分**各自的预测条带、一次混合样本观测条带、匹配容差与成分数上限，服务枚举不超过上限的全部候选子集，先把每个子集的预测条带按容差做单连接聚带（共迁移条带只出现一次、代表长度取均值），再复用鉴别接口的一对一最小代价匹配，按未匹配条带数、总误差、成分数、候选名列表字典序唯一选定最吻合的成分组合。
+- **批量盲样分配**：客户端提交若干**命名预测谱型**与若干**命名观测泳道**、条带匹配容差和单条分配允许的最大未匹配条带数，服务先复用鉴别接口的一对一条带匹配评估每条“谱型-泳道”边（未匹配数超阈值的边不可用），再在可用边上做**全局一对一分配**，依次最大化已分配泳道数、最小化未匹配总数、最小化总误差，并以泳道名排序后的谱型名序列字典序破同分，返回逐项匹配依据、未分配泳道与未使用谱型。
 
 **核心功能为纯本地数学计算，不依赖数据库、缓存或任何外部服务。**
 
@@ -45,6 +46,7 @@ uvicorn app.main:app --host 0.0.0.0 --port 8000
 | 凝胶条带样本鉴别 | POST | `http://localhost:8000/api/v1/digest/identify` |
 | 最小酶对面板 | POST | `http://localhost:8000/api/v1/digest/panel` |
 | 混合样本解析 | POST | `http://localhost:8000/api/v1/digest/mixture` |
+| 批量盲样分配 | POST | `http://localhost:8000/api/v1/digest/batch-identify` |
 | 交互式 API 文档（Swagger） | GET | `http://localhost:8000/docs` |
 | OpenAPI Schema | GET | `http://localhost:8000/openapi.json` |
 
@@ -52,7 +54,7 @@ uvicorn app.main:app --host 0.0.0.0 --port 8000
 
 ```bash
 curl http://localhost:8000/health
-# {"status":"ok","service":"circular-dna-digest","version":"1.3.0"}
+# {"status":"ok","service":"circular-dna-digest","version":"1.4.0"}
 ```
 
 ---
@@ -67,9 +69,11 @@ curl http://localhost:8000/health
 | `APP_PORT` | `8000` | 容器内监听端口 | 编辑 `docker-compose.yml` 的 `environment` |
 | `HOST_PORT` | `8000` | 宿主机映射端口 | `HOST_PORT=9000 docker compose up --build -d` |
 | `MAX_ENZYMES` | `64` | 单次请求允许的最大酶数量（酶对数为 C(n,2)） | 编辑 `environment` |
-| `MAX_BANDS` | `512` | identify / mixture 接口每个条带列表允许的最大条带数 | 编辑 `environment` |
+| `MAX_BANDS` | `512` | identify / mixture / batch-identify 接口每个条带列表允许的最大条带数 | 编辑 `environment` |
 | `MAX_VARIANTS` | `16` | panel 接口允许的最大变异型数量（最小面板为精确集合覆盖，规模随变异数指数增长） | 编辑 `environment` |
 | `MAX_MIXTURE_CANDIDATES` | `12` | mixture 接口允许的最大候选成分数（需枚举至多该规模的全部子集） | 编辑 `environment` |
+| `MAX_BATCH_PROFILES` | `32` | batch-identify 接口允许的最大预测谱型数（候选边数为谱型数 × 泳道数） | 编辑 `environment` |
+| `MAX_BATCH_LANES` | `32` | batch-identify 接口允许的最大观测泳道数（全局一对一分配为最小费用最大流） | 编辑 `environment` |
 
 ---
 
@@ -250,6 +254,88 @@ curl -X POST http://localhost:8000/api/v1/digest/mixture \
 - `evaluated_subset_count`：实际评估的子集数，等于 `Σ C(候选数, k)`（k = 1..`max_components`）。
 - `selection_reason`：中文选定依据，说明四级比较次序如何决定唯一结果。
 
+### 批量盲样分配（POST `/api/v1/digest/batch-identify`）
+
+#### 请求体（JSON）
+
+| 字段 | 类型 | 约束 |
+| --- | --- | --- |
+| `profiles` | array | 命名预测谱型列表，**至少 1 个**，谱型名不可重复，总数不超过 `MAX_BATCH_PROFILES`（默认 32） |
+| `profiles[].name` | string | 谱型名（非空白），如 `strain-A` |
+| `profiles[].predicted_bands` | number[] | 该谱型的预测条带长度（bp），每条 ≥ 0，**至少 1 条** |
+| `lanes` | array | 命名观测泳道列表，**至少 1 个**，泳道名不可重复，总数不超过 `MAX_BATCH_LANES`（默认 32） |
+| `lanes[].name` | string | 泳道名（非空白），如 `lane-1` |
+| `lanes[].observed_bands` | number[] | 该泳道的凝胶观测条带长度（bp），每条 ≥ 0，**至少 1 条** |
+| `band_match_tolerance` | number | ≥ 0，条带匹配容差（bp）：长度差不超过该值的预测/观测条带才允许配对 |
+| `max_unmatched_bands` | int | ≥ 0，单条分配允许的最大未匹配条带数；未匹配数超过该值的“谱型-泳道”边不可用 |
+
+请求示例见 [`examples/batch-identify-request.json`](examples/batch-identify-request.json)：
+
+```bash
+curl -X POST http://localhost:8000/api/v1/digest/batch-identify \
+  -H 'Content-Type: application/json' \
+  -d @examples/batch-identify-request.json
+```
+
+#### 算法说明（批量盲样分配）
+
+1. **逐边一对一条带匹配**：对每一个“谱型 × 泳道”组合，复用鉴别接口的同一套确定性一对一最小代价匹配（先最大化匹配对数、再最小化总误差），得到该边的**未匹配条带总数**（缺失 + 额外）与**总误差**。未匹配数 **超过** `max_unmatched_bands` 的边标记为不可用，从候选图中剔除（恰好等于阈值的边保留）。
+2. **全局一对一最优分配**：在可用边构成的二分图上（每个谱型、每个泳道至多使用一次）用**最小费用最大流**（逐次最短路增广）精确求解，依次：① **已分配泳道数最大化**（最大基数匹配）；② **全部分配边未匹配条带总数最小化**；③ **总误差之和最小化**。
+3. **字典序破同分**：三级指标完全相同时，先把泳道按名称排序，再比较该泳道序上“分配到的谱型名序列”的字典序；**未分配项统一排在所有谱型名之后**（名次取谱型总数，比任何真实谱型的 0..P−1 都大）。该字典序被编码为基数 `P + 1` 的位置数并入流的费用（每条分配边对应一个非正增量），因此最优解唯一，且名次仅由名称排序决定，**结果与谱型、泳道的输入提交顺序无关**。
+
+#### 响应示例（批量盲样分配）
+
+```json
+{
+  "band_match_tolerance": 10.0,
+  "max_unmatched_bands": 2,
+  "profile_count": 3,
+  "lane_count": 3,
+  "evaluated_edge_count": 9,
+  "eligible_edge_count": 5,
+  "assignments": [
+    {
+      "lane": "lane-1",
+      "profile": "alpha",
+      "unmatched_count": 0,
+      "match": {
+        "predicted_band_count": 3,
+        "matched_count": 3,
+        "missing_count": 0,
+        "extra_count": 0,
+        "total_error": 7.0,
+        "matches": [
+          {"predicted_length": 230.0, "observed_length": 231.0, "error": 1.0, "description": "..."},
+          {"predicted_length": 320.0, "observed_length": 319.0, "error": 1.0, "description": "..."},
+          {"predicted_length": 450.0, "observed_length": 455.0, "error": 5.0, "description": "..."}
+        ],
+        "missing_bands": [],
+        "extra_bands": []
+      },
+      "description": "泳道 lane-1 分配给谱型 alpha：未匹配条带 0 条（缺失 0 条、额外 0 条），总误差 7 bp……"
+    },
+    {
+      "lane": "lane-3",
+      "profile": "beta",
+      "unmatched_count": 0,
+      "match": { "...": "与鉴别接口完全同结构" },
+      "description": "……"
+    }
+  ],
+  "unassigned_lanes": ["lane-2"],
+  "unused_profiles": ["gamma"],
+  "assigned_lane_count": 2,
+  "total_unmatched_count": 0,
+  "total_error": 12.0,
+  "assignment_reason": "共评估 9 条谱型-泳道候选边……依次以已分配泳道数最大（2 个泳道）、未匹配条带总数最小（0 条）、总误差最小（12 bp）为目标……"
+}
+```
+
+- `assignments`：逐项匹配依据，**按泳道名字典序排列**；每项含 `lane` / `profile` / `unmatched_count` / `description`，以及与鉴别接口**完全同结构**的 `match`（逐条配对、缺失/额外条带、总误差）。
+- `unassigned_lanes`：未分配到任何谱型的泳道名（字典序）；`unused_profiles`：未分配给任何泳道的谱型名（字典序）。
+- `evaluated_edge_count` = 谱型数 × 泳道数；`eligible_edge_count` 为未匹配数不超过上限、实际参与全局分配的边数。
+- `assigned_lane_count` / `total_unmatched_count` / `total_error`：最优分配的三级目标值；`assignment_reason` 为中文依据，可由响应中的逐项计数复算。
+
 ### 拒绝条件（HTTP 422）
 
 以下输入问题整体拒绝，返回统一结构 `{"code":"validation_failed","errors":[...]}`，一次性报告全部错误：
@@ -283,7 +369,15 @@ curl -X POST http://localhost:8000/api/v1/digest/mixture \
 - 任一条带长度为负数、容差为负 / 缺失 / 非数值等字段约束错误；
 - 任一条带列表超过 `MAX_BANDS` 上限。
 
-注意：推荐接口中切点不足两个属于**酶对级别**的拒绝（记录在 `rejected_pairs`，HTTP 200），而非请求级别错误；面板接口中某变异型无可用酶对时同样返回 HTTP 200（列入 `uncovered_variants`，不返回部分面板）。
+批量盲样分配接口（`/api/v1/digest/batch-identify`）：
+
+- 谱型或泳道列表为空、谱型名 / 泳道名**重复**或为空白；
+- 任一谱型的 `predicted_bands` 或任一泳道的 `observed_bands` 为空；
+- 谱型数超过 `MAX_BATCH_PROFILES`（默认 32）或泳道数超过 `MAX_BATCH_LANES`（默认 32）上限；
+- `max_unmatched_bands` 缺失、非整数或为负；`band_match_tolerance` 为负 / 缺失 / 非数值；
+- 任一条带列表超过 `MAX_BANDS` 上限。
+
+注意：推荐接口中切点不足两个属于**酶对级别**的拒绝（记录在 `rejected_pairs`，HTTP 200），而非请求级别错误；面板接口中某变异型无可用酶对时同样返回 HTTP 200（列入 `uncovered_variants`，不返回部分面板）；批量盲样分配接口中所有候选边都超过未匹配阈值时同样返回 HTTP 200（`assignments` 为空、全部泳道列入 `unassigned_lanes`）。
 
 ---
 
@@ -292,19 +386,21 @@ curl -X POST http://localhost:8000/api/v1/digest/mixture \
 ```
 .
 ├── app/
-│   ├── main.py          # FastAPI 入口：健康检查、推荐/鉴别/面板/混合路由、统一 422 处理
+│   ├── main.py          # FastAPI 入口：健康检查、推荐/鉴别/面板/混合/批量分配路由、统一 422 处理
 │   ├── models.py        # 请求/响应 Pydantic 模型
 │   ├── validation.py    # 越界、重复位点、变异名一致性、条带/候选规模等语义校验
 │   ├── digest.py        # 圆环片段、条带聚类、酶对枚举与排序（纯函数）
 │   ├── identify.py      # 条带一对一最小代价匹配与样本判定（纯函数）
 │   ├── panel.py         # 逐变异评估与精确最小酶对面板（纯函数）
 │   ├── mixture.py       # 混合样本共迁移聚带、子集枚举与最优子集选定（纯函数）
+│   ├── batch_identify.py # 批量盲样谱型-泳道边评估与全局一对一最小费用最大流分配（纯函数）
 │   └── config.py        # 环境变量配置（均有默认值）
 ├── tests/               # pytest 单元 + API 端到端测试
 ├── examples/request.json
 ├── examples/identify-request.json
 ├── examples/panel-request.json
 ├── examples/mixture-request.json
+├── examples/batch-identify-request.json
 ├── Dockerfile
 ├── docker-compose.yml
 └── requirements.txt

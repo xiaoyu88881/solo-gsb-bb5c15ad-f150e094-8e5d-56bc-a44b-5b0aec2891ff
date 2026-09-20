@@ -20,5 +20,10 @@ class Settings:
     # mixture 接口允许的最大候选成分数：需枚举至多该规模的全部子集
     MAX_MIXTURE_CANDIDATES: int = int(os.getenv("MAX_MIXTURE_CANDIDATES", "12"))
 
+    # batch-identify 接口允许的最大谱型数与泳道数：候选边数为两者乘积，
+    # 全局一对一分配为最小费用最大流
+    MAX_BATCH_PROFILES: int = int(os.getenv("MAX_BATCH_PROFILES", "32"))
+    MAX_BATCH_LANES: int = int(os.getenv("MAX_BATCH_LANES", "32"))
+
 
 settings = Settings()

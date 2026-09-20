@@ -1,0 +1,32 @@
+{
+  "profiles": [
+    {
+      "name": "alpha",
+      "predicted_bands": [230, 320, 450]
+    },
+    {
+      "name": "beta",
+      "predicted_bands": [318, 460, 700]
+    },
+    {
+      "name": "gamma",
+      "predicted_bands": [300, 600, 900]
+    }
+  ],
+  "lanes": [
+    {
+      "name": "lane-1",
+      "observed_bands": [231, 319, 455]
+    },
+    {
+      "name": "lane-2",
+      "observed_bands": [200, 322, 451]
+    },
+    {
+      "name": "lane-3",
+      "observed_bands": [317, 462, 698]
+    }
+  ],
+  "band_match_tolerance": 10,
+  "max_unmatched_bands": 2
+}

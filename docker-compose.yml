@@ -18,6 +18,8 @@ services:
       MAX_VARIANTS: "16"
       # mixture 接口允许的最大候选成分数（枚举至多该规模的全部子集）
       MAX_MIXTURE_CANDIDATES: "12"
+      # batch-identify 接口允许的最大谱型数 / 泳道数（全局一对一分配为 O(k³)）
+      MAX_BATCH_ITEMS: "32"
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "python", "-c", "import os,sys,urllib.request; port=os.getenv('APP_PORT','8000'); sys.exit(0 if urllib.request.urlopen(f'http://127.0.0.1:{port}/health', timeout=3).status==200 else 1)"]

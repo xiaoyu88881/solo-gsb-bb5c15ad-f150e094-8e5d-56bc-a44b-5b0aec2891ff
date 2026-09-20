@@ -6,11 +6,14 @@ from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
+from app.batch import assign_lanes
 from app.config import settings
 from app.digest import recommend
 from app.identify import identify
 from app.mixture import resolve_mixture
 from app.models import (
+    BatchIdentifyRequest,
+    BatchIdentifyResponse,
     DigestRequest,
     DigestResponse,
     HealthResponse,
@@ -24,13 +27,14 @@ from app.models import (
 from app.panel import build_panel
 from app.validation import (
     DigestValidationError,
+    validate_batch_identify_request,
     validate_identify_request,
     validate_mixture_request,
     validate_panel_request,
     validate_request,
 )
 
-VERSION = "1.3.0"
+VERSION = "1.4.0"
 
 app = FastAPI(
     title="Circular DNA Double-Digest Discrimination Service",
@@ -41,7 +45,9 @@ app = FastAPI(
         "判定观测样本为参考型、变异型或无法区分；还可针对多个变异型精确求出"
         "覆盖全部变异型的最小酶对面板（非贪心近似）；并可枚举命名候选的"
         "成分子集，先按容差单连接合并共迁移预测条带再做一对一匹配，"
-        "唯一选定与一次混合样本观测最吻合的成分组合。"
+        "唯一选定与一次混合样本观测最吻合的成分组合；亦可对批量命名盲样泳道"
+        "与命名预测谱型先逐边一对一条带匹配（按未匹配阈值剔除边），"
+        "再做全局一对一最优分配。"
     ),
     version=VERSION,
 )
@@ -115,6 +121,17 @@ async def digest_panel(req: PanelRequest) -> PanelResponse:
 async def digest_mixture(req: MixtureRequest) -> MixtureResponse:
     validate_mixture_request(req)
     return resolve_mixture(req)
+
+
+@app.post(
+    "/api/v1/digest/batch-identify",
+    response_model=BatchIdentifyResponse,
+    tags=["digest"],
+    summary="批量盲样泳道与命名预测谱型：逐边匹配筛边后做全局一对一最优分配",
+)
+async def digest_batch_identify(req: BatchIdentifyRequest) -> BatchIdentifyResponse:
+    validate_batch_identify_request(req)
+    return assign_lanes(req)
 
 
 if __name__ == "__main__":

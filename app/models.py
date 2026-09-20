@@ -268,3 +268,89 @@ class MixtureResponse(BaseModel):
     selection_reason: str = Field(
         description="中文选定依据：未匹配条带数、总误差、成分数及候选名列表如何决定唯一结果"
     )
+
+
+# ---------------------------------------------------------------- 批量盲样分配（batch-identify）模型
+
+class BatchProfileInput(BaseModel):
+    name: str = Field(..., min_length=1, description="命名预测谱型名称（如菌株 / 单菌编号）")
+    predicted_bands: list[NonNegativeBand] = Field(
+        ..., min_length=1, description="该谱型的预测条带长度列表（bp），至少 1 条"
+    )
+
+
+class BatchLaneInput(BaseModel):
+    name: str = Field(..., min_length=1, description="命名观测泳道名称（盲样编号）")
+    observed_bands: list[NonNegativeBand] = Field(
+        ..., min_length=1, description="该泳道凝胶观测到的条带长度列表（bp），至少 1 条"
+    )
+
+
+class BatchIdentifyRequest(BaseModel):
+    profiles: list[BatchProfileInput] = Field(
+        ..., min_length=1, description="命名预测谱型列表，谱型名不可重复，至少 1 个"
+    )
+    lanes: list[BatchLaneInput] = Field(
+        ..., min_length=1, description="命名观测泳道列表，泳道名不可重复，至少 1 条"
+    )
+    band_match_tolerance: NonNegativeBand = Field(
+        ..., description="条带匹配容差（bp）：长度差不超过该值的预测/观测条带才允许配对"
+    )
+    max_unmatched_bands: int = Field(
+        ..., ge=0,
+        description="单条分配允许的最大未匹配条带数（缺失 + 额外）；"
+                    "某谱型-泳道边的未匹配数超过该值时该边不可用",
+    )
+
+
+class BatchEdgeOut(BaseModel):
+    lane: str = Field(description="观测泳道名")
+    profile: str = Field(description="预测谱型名")
+    usable: bool = Field(description="未匹配条带数是否不超过 max_unmatched_bands（false 表示该边不可用于分配）")
+    unmatched_count: int = Field(description="该边一对一匹配的未匹配条带数（缺失 + 额外）")
+    missing_count: int
+    extra_count: int
+    total_error: float = Field(description="该边全部匹配对的长度差之和（bp）")
+    match: SampleMatchOut | None = Field(
+        description="可用边的一对一匹配依据（与鉴别接口同结构）；不可用边为 null"
+    )
+    reason: str = Field(description="中文边可用性依据说明")
+
+
+class BatchAssignmentOut(BaseModel):
+    lane: str = Field(description="观测泳道名（结果按泳道名字典序排序）")
+    assigned_profile: str | None = Field(description="分配到的谱型名；未分配时为 null")
+    usable: bool = Field(description="该泳道是否被分配（true 已分配 / false 未分配）")
+    unmatched_count: int = Field(
+        description="已分配时为所用边的未匹配条带数；未分配时为该泳道全部观测条带数"
+    )
+    total_error: float = Field(description="已分配时为所用边总误差（bp）；未分配时为 0")
+    match: SampleMatchOut | None = Field(
+        description="已分配泳道的逐条匹配依据；未分配泳道为 null"
+    )
+    description: str = Field(description="中文分配依据说明")
+
+
+class BatchIdentifyResponse(BaseModel):
+    band_match_tolerance: float
+    max_unmatched_bands: int
+    profile_count: int
+    lane_count: int
+    assigned_lane_count: int = Field(description="实际分配到谱型的泳道数（全局一对一分配的首要目标）")
+    total_unmatched_count: int = Field(
+        description="未匹配条带总数：全部已分配边的未匹配数与未分配泳道全部观测条带数之和"
+    )
+    total_error: float = Field(
+        description="全部已分配边匹配对长度差之和（bp，分配的第二、第三目标见 assignment_reason）"
+    )
+    assignments: list[BatchAssignmentOut] = Field(
+        description="逐项分配依据，按泳道名字典序排序；未分配项 assigned_profile 为 null"
+    )
+    unassigned_lanes: list[str] = Field(description="未分配到任何谱型的泳道名，按字典序")
+    unused_profiles: list[str] = Field(description="未被任何泳道使用的谱型名，按字典序")
+    edges: list[BatchEdgeOut] = Field(
+        description="全部谱型-泳道边的逐项匹配依据，按泳道名、谱型名字典序排序"
+    )
+    assignment_reason: str = Field(
+        description="中文分配依据：边可用性阈值与全局一对一分配的四级比较次序如何决定唯一结果"
+    )

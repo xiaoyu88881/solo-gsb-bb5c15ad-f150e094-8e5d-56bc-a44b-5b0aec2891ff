@@ -6,7 +6,13 @@
 from fastapi import HTTPException
 
 from app.config import settings
-from app.models import DigestRequest, IdentifyRequest, MixtureRequest, PanelRequest
+from app.models import (
+    BatchIdentifyRequest,
+    DigestRequest,
+    IdentifyRequest,
+    MixtureRequest,
+    PanelRequest,
+)
 
 
 class DigestValidationError(HTTPException):
@@ -197,6 +203,61 @@ def validate_panel_request(req: PanelRequest) -> PanelRequest:
             f"变异型数量（{len(all_variants)}）超过允许上限 {settings.MAX_VARIANTS}",
             "too_many_variants",
         ))
+
+    if errors:
+        raise DigestValidationError(errors)
+    return req
+
+
+def validate_batch_identify_request(req: BatchIdentifyRequest) -> BatchIdentifyRequest:
+    """batch-identify 接口的语义校验：谱型/泳道规模、重名、空名与条带规模。
+
+    谱型/泳道列表为空、条带为负、容差非法或缺失、``max_unmatched_bands``
+    为负 / 缺失等基础字段约束由 Pydantic 模型直接拦截，与此处一样输出
+    统一结构的 422 响应。谱型名与泳道名分属不同命名空间，允许同名。
+    """
+    errors: list[dict] = []
+
+    if len(req.profiles) > settings.MAX_BATCH_ITEMS:
+        errors.append(_err(
+            ["profiles"],
+            f"预测谱型数量（{len(req.profiles)}）超过允许上限 {settings.MAX_BATCH_ITEMS}",
+            "too_many_profiles",
+        ))
+    if len(req.lanes) > settings.MAX_BATCH_ITEMS:
+        errors.append(_err(
+            ["lanes"],
+            f"观测泳道数量（{len(req.lanes)}）超过允许上限 {settings.MAX_BATCH_ITEMS}",
+            "too_many_lanes",
+        ))
+
+    for field_name, items in (("profiles", req.profiles), ("lanes", req.lanes)):
+        seen_names: set[str] = set()
+        for i, item in enumerate(items):
+            name = item.name
+            if not name.strip():
+                errors.append(_err(
+                    [field_name, i, "name"],
+                    f"{'谱型' if field_name == 'profiles' else '泳道'}名不能为空白",
+                    "invalid_name",
+                ))
+            if name in seen_names:
+                errors.append(_err(
+                    [field_name, i, "name"],
+                    f"{'谱型' if field_name == 'profiles' else '泳道'}名重复：{name}",
+                    "duplicate_name",
+                ))
+            seen_names.add(name)
+
+            bands_attr = "predicted_bands" if field_name == "profiles" else "observed_bands"
+            if len(getattr(item, bands_attr)) > settings.MAX_BANDS:
+                errors.append(_err(
+                    [field_name, i, bands_attr],
+                    f"{'谱型' if field_name == 'profiles' else '泳道'} {name} 的"
+                    f"条带数量（{len(getattr(item, bands_attr))}）超过允许上限 "
+                    f"{settings.MAX_BANDS}",
+                    "too_many_bands",
+                ))
 
     if errors:
         raise DigestValidationError(errors)

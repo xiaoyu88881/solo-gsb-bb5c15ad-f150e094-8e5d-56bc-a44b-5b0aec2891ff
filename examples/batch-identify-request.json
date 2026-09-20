@@ -1,0 +1,36 @@
+{
+  "profiles": [
+    {
+      "name": "strain-A",
+      "predicted_bands": [230, 320, 450]
+    },
+    {
+      "name": "strain-B",
+      "predicted_bands": [215, 400, 520]
+    },
+    {
+      "name": "strain-C",
+      "predicted_bands": [228, 318, 452, 700]
+    },
+    {
+      "name": "strain-D",
+      "predicted_bands": [600, 800, 950]
+    }
+  ],
+  "lanes": [
+    {
+      "name": "lane-1",
+      "observed_bands": [231, 318, 455]
+    },
+    {
+      "name": "lane-2",
+      "observed_bands": [214, 402, 518]
+    },
+    {
+      "name": "lane-3",
+      "observed_bands": [229, 451, 701]
+    }
+  ],
+  "band_match_tolerance": 10,
+  "max_unmatched_bands": 2
+}

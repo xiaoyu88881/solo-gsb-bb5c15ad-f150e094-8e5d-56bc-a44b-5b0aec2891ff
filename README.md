@@ -1,11 +1,12 @@
 # 环状 DNA 双酶切鉴别服务
 
-基于 FastAPI 的圆形（环状）DNA 双酶切鉴别服务，提供四个互补接口：
+基于 FastAPI 的圆形（环状）DNA 双酶切鉴别服务，提供五个互补接口：
 
 - **方案推荐**：客户端提交质粒长度、参考型与变异型的候选酶切位点、最小可见片段长度和条带分辨容差，服务枚举所有不同酶对，按圆环相邻切点计算两种样本的片段长度，将容差内的片段聚为同一条电泳条带，并推荐能够区分两种样本的酶对。
 - **样本鉴别**：客户端提交同一质粒参考型、变异型的预测条带长度和一次凝胶观测长度列表，服务在给定容差内做确定性的一对一最小代价匹配，分别计算两种样本的缺失条带、额外条带与总误差，判定观测样本为参考型、变异型或无法区分。
 - **最小酶对面板**：客户端提交质粒长度、可见阈值、分辨容差及酶列表（每种酶给出参考型切点和按变异名映射的变异型切点），服务复用同一套圆环酶切与聚带规则评估每个酶对对每个变异型的可区分条带，并**精确**求出覆盖全部变异型的最小酶对面板（非贪心近似）。
 - **混合样本解析**：客户端提交若干**命名候选成分**各自的预测条带、一次混合样本观测条带、匹配容差与成分数上限，服务枚举不超过上限的全部候选子集，先把每个子集的预测条带按容差做单连接聚带（共迁移条带只出现一次、代表长度取均值），再复用鉴别接口的一对一最小代价匹配，按未匹配条带数、总误差、成分数、候选名列表字典序唯一选定最吻合的成分组合。
+- **批量盲样分配**：客户端提交若干**命名预测谱型**与若干**命名观测泳道**（盲样）、条带匹配容差与单条分配允许的最大未匹配条带数；服务先对每条"谱型-泳道"边复用鉴别接口的一对一条带匹配计算未匹配数与总误差（超阈值的边不可用），再做全局一对一最优分配——依次最大化已分配泳道数、最小化未匹配总数、最小化总误差，并按泳道名排序后的谱型名序列字典序破同分（未分配排在所有谱型名之后），结果与输入顺序无关。
 
 **核心功能为纯本地数学计算，不依赖数据库、缓存或任何外部服务。**
 
@@ -45,6 +46,7 @@ uvicorn app.main:app --host 0.0.0.0 --port 8000
 | 凝胶条带样本鉴别 | POST | `http://localhost:8000/api/v1/digest/identify` |
 | 最小酶对面板 | POST | `http://localhost:8000/api/v1/digest/panel` |
 | 混合样本解析 | POST | `http://localhost:8000/api/v1/digest/mixture` |
+| 批量盲样分配 | POST | `http://localhost:8000/api/v1/digest/batch-identify` |
 | 交互式 API 文档（Swagger） | GET | `http://localhost:8000/docs` |
 | OpenAPI Schema | GET | `http://localhost:8000/openapi.json` |
 
@@ -52,7 +54,7 @@ uvicorn app.main:app --host 0.0.0.0 --port 8000
 
 ```bash
 curl http://localhost:8000/health
-# {"status":"ok","service":"circular-dna-digest","version":"1.3.0"}
+# {"status":"ok","service":"circular-dna-digest","version":"1.4.0"}
 ```
 
 ---
@@ -70,6 +72,7 @@ curl http://localhost:8000/health
 | `MAX_BANDS` | `512` | identify / mixture 接口每个条带列表允许的最大条带数 | 编辑 `environment` |
 | `MAX_VARIANTS` | `16` | panel 接口允许的最大变异型数量（最小面板为精确集合覆盖，规模随变异数指数增长） | 编辑 `environment` |
 | `MAX_MIXTURE_CANDIDATES` | `12` | mixture 接口允许的最大候选成分数（需枚举至多该规模的全部子集） | 编辑 `environment` |
+| `MAX_BATCH_ITEMS` | `32` | batch-identify 接口允许的最大谱型数 / 泳道数（全局一对一分配为 O(k³)） | 编辑 `environment` |
 
 ---
 
@@ -250,6 +253,52 @@ curl -X POST http://localhost:8000/api/v1/digest/mixture \
 - `evaluated_subset_count`：实际评估的子集数，等于 `Σ C(候选数, k)`（k = 1..`max_components`）。
 - `selection_reason`：中文选定依据，说明四级比较次序如何决定唯一结果。
 
+### 批量盲样分配（POST `/api/v1/digest/batch-identify`）
+
+一次把多条**盲样泳道**分配到多个**命名预测谱型**，每个谱型至多使用一次、每条泳道至多分配一个谱型（全局一对一）。
+
+#### 请求体（JSON）
+
+| 字段 | 类型 | 约束 |
+| --- | --- | --- |
+| `profiles` | array | 命名预测谱型列表，**至少 1 个**，谱型名不可重复，总数不超过 `MAX_BATCH_ITEMS`（默认 32） |
+| `profiles[].name` | string | 谱型名（非空白），如 `strain-A` |
+| `profiles[].predicted_bands` | number[] | 该谱型的预测条带长度（bp），每条 ≥ 0，**至少 1 条** |
+| `lanes` | array | 命名观测泳道列表，**至少 1 条**，泳道名不可重复，总数不超过 `MAX_BATCH_ITEMS`（默认 32）；泳道名与谱型名分属不同命名空间，允许同名 |
+| `lanes[].name` | string | 泳道名（非空白），如 `lane-1` |
+| `lanes[].observed_bands` | number[] | 该泳道观测到的条带长度（bp），每条 ≥ 0，**至少 1 条** |
+| `band_match_tolerance` | number | ≥ 0，条带匹配容差（bp）：长度差不超过该值的预测/观测条带才允许配对 |
+| `max_unmatched_bands` | int | ≥ 0，**单条分配允许的最大未匹配条带数**（缺失 + 额外）；某谱型-泳道边的未匹配数超过该值时该边不可用 |
+
+请求示例见 [`examples/batch-identify-request.json`](examples/batch-identify-request.json)：
+
+```bash
+curl -X POST http://localhost:8000/api/v1/digest/batch-identify \
+  -H 'Content-Type: application/json' \
+  -d @examples/batch-identify-request.json
+```
+
+#### 算法说明（批量分配）
+
+1. **逐边一对一条带匹配**：对全部 `谱型数 × 泳道数` 条边，复用鉴别接口的同一套确定性匹配（条带各自按长度升序、`|预测 − 观测| ≤ band_match_tolerance` 才配对，先最大化匹配对数再最小化总误差），得到每条边的匹配对数、缺失 / 额外条带、未匹配条带数与总误差。**未匹配条带数（缺失 + 额外）超过 `max_unmatched_bands` 的边标记为不可用**，不参与后续分配（边界含等号：恰好等于阈值可用）。
+2. **全局一对一最优分配**：补虚拟泳道（吸收未使用谱型）与虚拟谱型（吸收未分配泳道）后，在可用边上做赋权二分图最小权完美匹配（O(k³) 匈牙利算法）。四个依次比较的目标被编码为一个**混合进制整数**（低序目标的取值范围严格小于高序目标的进制，低位相加不会进位），保证整数大小次序与下列字典序完全一致：
+   1. **已分配泳道数最多**（首要目标；宁可留谱型未使用，也要尽量多分配泳道）；
+   2. **未匹配总数最少** = 全部已分配边的未匹配数之和 + 未分配泳道的全部观测条数（未分配泳道的观测条带全部计为未匹配）；
+   3. **总误差最小** = 全部已分配边匹配对长度差之和；
+   4. 并列时，泳道先按泳道名字典序排序，再以其**对应谱型名序列的字典序**破同分，**未分配项排在所有谱型名之后**。
+3. **确定性**：全部决策只依赖排序后的泳道名 / 谱型名与边匹配结果，**响应不受谱型、泳道及条带在请求中的提交顺序影响**。
+
+#### 响应要点（批量分配）
+
+- `assignments`：**逐项匹配依据**，按泳道名字典序排序，每项包含
+  - `lane` / `assigned_profile`（未分配时为 `null`）/ `usable`；
+  - `unmatched_count` / `total_error`（已分配为所用边的值；未分配时分别为该泳道全部观测条数与 0）；
+  - `match`：已分配泳道的逐条配对依据（与鉴别接口**完全同结构**，含 `matches` / `missing_bands` / `extra_bands`），未分配泳道为 `null`；
+  - `description`：中文分配依据（说明无可用边、还是可用谱型在全局分配中被其他泳道占用）。
+- `unassigned_lanes`：**未分配泳道**名（字典序）；`unused_profiles`：**未使用谱型**名（字典序）。
+- `edges`：**全部谱型-泳道边**的逐项依据（按泳道名、谱型名字典序排序）：`usable`、`unmatched_count` / `missing_count` / `extra_count` / `total_error`，可用边附完整 `match` 明细、不可用边 `match` 为 `null`，并给出中文 `reason`。
+- `assigned_lane_count` / `total_unmatched_count` / `total_error`：全局汇总，恒等于 `assignments` 逐项之和，可由响应直接复算；`assignment_reason` 说明阈值与四级比较次序如何决定唯一结果。
+
 ### 拒绝条件（HTTP 422）
 
 以下输入问题整体拒绝，返回统一结构 `{"code":"validation_failed","errors":[...]}`，一次性报告全部错误：
@@ -283,7 +332,16 @@ curl -X POST http://localhost:8000/api/v1/digest/mixture \
 - 任一条带长度为负数、容差为负 / 缺失 / 非数值等字段约束错误；
 - 任一条带列表超过 `MAX_BANDS` 上限。
 
-注意：推荐接口中切点不足两个属于**酶对级别**的拒绝（记录在 `rejected_pairs`，HTTP 200），而非请求级别错误；面板接口中某变异型无可用酶对时同样返回 HTTP 200（列入 `uncovered_variants`，不返回部分面板）。
+批量分配接口（`/api/v1/digest/batch-identify`）：
+
+- 谱型名或泳道名**重复**或为空白；谱型 / 泳道列表为空；
+- 谱型数或泳道数超过 `MAX_BATCH_ITEMS`（默认 32）上限；
+- 任一谱型的 `predicted_bands` 或任一泳道的 `observed_bands` 为空；
+- `band_match_tolerance` 或 `max_unmatched_bands` 为负 / 缺失 / 非数值；
+- 任一条带长度为负数等字段约束错误；
+- 任一条带列表超过 `MAX_BANDS` 上限。
+
+注意：推荐接口中切点不足两个属于**酶对级别**的拒绝（记录在 `rejected_pairs`，HTTP 200），而非请求级别错误；面板接口中某变异型无可用酶对时同样返回 HTTP 200（列入 `uncovered_variants`，不返回部分面板）；批量分配接口中某条边未匹配数超阈值属于**边级别**的不可用（记录在 `edges[].usable=false` 与未分配结果中，HTTP 200），所有谱型-泳道边都不可用时返回的是"全部泳道未分配"的成功响应，而非 422。
 
 ---
 
@@ -292,19 +350,21 @@ curl -X POST http://localhost:8000/api/v1/digest/mixture \
 ```
 .
 ├── app/
-│   ├── main.py          # FastAPI 入口：健康检查、推荐/鉴别/面板/混合路由、统一 422 处理
+│   ├── main.py          # FastAPI 入口：健康检查、推荐/鉴别/面板/混合/批量分配路由、统一 422 处理
 │   ├── models.py        # 请求/响应 Pydantic 模型
 │   ├── validation.py    # 越界、重复位点、变异名一致性、条带/候选规模等语义校验
 │   ├── digest.py        # 圆环片段、条带聚类、酶对枚举与排序（纯函数）
 │   ├── identify.py      # 条带一对一最小代价匹配与样本判定（纯函数）
 │   ├── panel.py         # 逐变异评估与精确最小酶对面板（纯函数）
 │   ├── mixture.py       # 混合样本共迁移聚带、子集枚举与最优子集选定（纯函数）
+│   ├── batch.py         # 批量盲样逐边匹配筛边与全局一对一最优分配（纯函数）
 │   └── config.py        # 环境变量配置（均有默认值）
 ├── tests/               # pytest 单元 + API 端到端测试
 ├── examples/request.json
 ├── examples/identify-request.json
 ├── examples/panel-request.json
 ├── examples/mixture-request.json
+├── examples/batch-identify-request.json
 ├── Dockerfile
 ├── docker-compose.yml
 └── requirements.txt
